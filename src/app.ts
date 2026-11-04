@@ -1,11 +1,11 @@
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import { registerAuth } from './auth/auth.js';
+import { createAuth, type Auth } from './auth/auth.js';
+import { registerAuth } from './auth/plugin.js';
 import type { Database } from './config/db.js';
 import type { Env } from './config/env.js';
 import { attachmentController } from './controller/attachment.controller.js';
-import { authController } from './controller/auth.controller.js';
 import { ticketController } from './controller/ticket.controller.js';
 import { userController } from './controller/user.controller.js';
 import { AppError, isForeignKeyViolation } from './exception/errors.js';
@@ -30,6 +30,7 @@ export interface AppDeps {
   storage?: StorageService;
   scanner?: FileScanner;
   logger?: boolean;
+  auth?: Auth;
 }
 
 export async function buildApp(deps: AppDeps) {
@@ -42,6 +43,7 @@ export async function buildApp(deps: AppDeps) {
   const commentRepo = new CommentRepository(db);
   const attachmentRepo = new AttachmentRepository(db);
   const auditRepo = new AuditRepository(db);
+  const auth = deps.auth ?? createAuth(db, env);
 
   const audit = new AuditService(auditRepo);
   const notifier = new NotificationService(userRepo, deps.emailSender ?? new LogEmailSender(app.log), app.log);
@@ -56,7 +58,7 @@ export async function buildApp(deps: AppDeps) {
     scan: deps.scanner,
   });
 
-  await registerAuth(app, env);
+  await registerAuth(app, auth, env.BETTER_AUTH_URL);
   await app.register(multipart, { limits: { fileSize: env.MAX_UPLOAD_BYTES, files: 1, fields: 5 } });
 
   app.setErrorHandler((err: any, req, reply) => {
@@ -89,5 +91,5 @@ export async function buildApp(deps: AppDeps) {
   ticketController(app, ticketService, commentService);
   attachmentController(app, attachmentService);
 
-  return { app, services: { userService, ticketService, commentService, attachmentService, notifier } };
+  return { app, auth, services: { userService, ticketService, commentService, attachmentService, notifier } };
 }
