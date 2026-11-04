@@ -18,8 +18,8 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@fastify/jwt": "^10.2.6",
     "@fastify/multipart": "^10.1.7",
+    "better-auth": "^1.7.15",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.8",
     "postgres": "^4.0.0",

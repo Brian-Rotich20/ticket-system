@@ -1,31 +1,19 @@
-import fastifyJwt from '@fastify/jwt';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { Env } from '../config/env.js';
-import { UnauthorizedError } from '../exception/errors.js';
-import type { UserRole } from '../model/enums.js';
-import type { Actor } from '../service/actor.js';
+// src/auth/auth.ts
+import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import * as schema from "../model/schema";
+import { db } from "../config/db"; // Point to your drizzle db config
 
-declare module '@fastify/jwt' {
-  interface FastifyJWT {
-    payload: { userId: number; role: UserRole };
-    user: { userId: number; role: UserRole };
-  }
-}
-declare module 'fastify' {
-  interface FastifyInstance {
-    authenticate: (req: FastifyRequest) => Promise<void>;
-  }
-}
-
-export async function registerAuth(app: FastifyInstance, env: Pick<Env, 'JWT_SECRET' | 'JWT_EXPIRES_IN'>) {
-  await app.register(fastifyJwt, { secret: env.JWT_SECRET, sign: { expiresIn: env.JWT_EXPIRES_IN } });
-  app.decorate('authenticate', async (req: FastifyRequest) => {
-    try {
-      await req.jwtVerify();
-    } catch {
-      throw new UnauthorizedError('Invalid or missing token');
-    }
-  });
-}
-
-export const actorOf = (req: FastifyRequest): Actor => ({ userId: req.user.userId, role: req.user.role });
+export const auth = betterAuth({
+  database: drizzleAdapter(db, {
+    provider: "pg",
+    schema: schema,
+  }),
+  emailAndPassword: { enabled: true },
+  user: {
+    additionalFields: {
+      tenantId: { type: "string", required: true },
+      role: { type: "string", required: true, defaultValue: "CUSTOMER" },
+    },
+  },
+});
