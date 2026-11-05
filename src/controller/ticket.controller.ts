@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createCommentDto } from '../dto/comment.dto.js';
 import { idParam, paginationQuery } from '../dto/common.dto.js';
 import { createTicketDto, ticketFilterQuery, ticketSearchQuery, updateTicketDto } from '../dto/ticket.dto.js';
-import { actorOf } from '../auth/auth.js';
+import type { AuthUser } from '../auth/auth-user.js';
 import type { CommentService } from '../service/comment.service.js';
 import type { TicketService } from '../service/ticket.service.js';
 

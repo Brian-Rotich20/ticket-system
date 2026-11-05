@@ -3,10 +3,11 @@ import type { Database, Executor } from '../config/db.js';
 import { auditLogs, type AuditLog } from '../model/schema.js';
 
 export interface AuditEntry {
-  actorId: number | null;
+  tenantId: string;
+  actorId: string | null;
   action: string;
   entityType: string;
-  entityId: number;
+  entityId: string | number;
   metadata?: Record<string, unknown>;
 }
 
@@ -14,11 +15,11 @@ export class AuditRepository {
   constructor(private readonly db: Database) {}
 
   async insert(entry: AuditEntry, ex: Executor = this.db): Promise<void> {
-    await ex.insert(auditLogs).values({ ...entry, metadata: entry.metadata ?? null });
+    await ex.insert(auditLogs).values({ ...entry, entityId: String(entry.entityId), metadata: entry.metadata ?? null });
   }
 
   async list(
-    filter: { entityType?: string; entityId?: number },
+    filter: { entityType?: string; entityId?: string | number },
     opts: { limit: number; offset: number },
     ex: Executor = this.db,
   ): Promise<{ items: AuditLog[]; total: number }> {

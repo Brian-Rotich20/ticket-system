@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
+/** Numeric id in the URL (tickets, comments, attachments). */
 export const idParam = z.object({ id: z.coerce.number().int().positive() });
+/** Better Auth user ids are strings. */
+export const userIdParam = z.object({ id: z.string().min(1).max(64) });
 
 export const paginationQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),

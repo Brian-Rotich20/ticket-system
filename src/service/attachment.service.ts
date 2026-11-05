@@ -13,7 +13,7 @@ import {
 import type { Attachment } from '../model/schema.js';
 import type { AttachmentRepository } from '../repository/attachment.repository.js';
 import type { TicketRepository } from '../repository/ticket.repository.js';
-import type { Actor } from './actor.js';
+import type { AuthUser } from '../auth/auth-user.js'
 import type { AuditService } from './audit.service.js';
 import { assertCanView, isAdmin } from './policy.js';
 import type { StorageService } from './storage.service.js';
@@ -56,7 +56,7 @@ export class AttachmentService {
     private readonly opts: { maxBytes: number; maxPerTicket: number; scan?: FileScanner },
   ) {}
 
-  async uploadFile(actor: Actor, ticketId: number, file: UploadedFile): Promise<AttachmentView> {
+  async uploadFile(actor: AuthUser, ticketId: number, file: UploadedFile): Promise<AttachmentView> {
     const fileName = this.validate(file);
     await this.opts.scan?.(file);
     const key = `tickets/${ticketId}/${randomUUID()}${path.extname(fileName).toLowerCase()}`;
@@ -72,10 +72,10 @@ export class AttachmentService {
           throw new ConflictError(`A ticket can have at most ${this.opts.maxPerTicket} attachments`, 'TOO_MANY_ATTACHMENTS');
         }
         const row = await this.attachments.insert(
-          { ticketId, fileUrl: key, fileName, fileType: file.mimetype, uploadedBy: actor.userId },
+          { ticketId, fileUrl: key, fileName, fileType: file.mimetype, uploadedBy: actor.id  },
           tx,
         );
-        await this.audit.record({ actorId: actor.userId, action: 'ATTACHMENT_ADDED', entityType: 'TICKET', entityId: ticketId, metadata: { attachmentId: row.attachmentId, fileName } }, tx);
+        await this.audit.record({ actorId: actor.id, action: 'ATTACHMENT_ADDED', entityType: 'TICKET', entityId: ticketId, metadata: { attachmentId: row.attachmentId, fileName } }, tx);
         return row;
       });
       return this.toView(saved);
@@ -85,35 +85,35 @@ export class AttachmentService {
     }
   }
 
-  async getAttachmentsByTicketId(actor: Actor, ticketId: number): Promise<AttachmentView[]> {
+  async getAttachmentsByTicketId(actor: AuthUser, ticketId: number): Promise<AttachmentView[]> {
     const ticket = await this.tickets.findById(ticketId);
     if (!ticket) throw new NotFoundError('Ticket', ticketId);
     assertCanView(actor, ticket);
     return Promise.all((await this.attachments.listByTicket(ticketId)).map((a) => this.toView(a)));
   }
 
-  async getFileUrl(actor: Actor, attachmentId: number): Promise<AttachmentView> {
+  async getFileUrl(actor: AuthUser, attachmentId: number): Promise<AttachmentView> {
     return this.toView(await this.loadAuthorized(actor, attachmentId));
   }
 
   /** Authorised read used by the download endpoint when storage cannot hand out a signed URL. */
-  async readFile(actor: Actor, attachmentId: number): Promise<{ attachment: Attachment; data: Buffer }> {
+  async readFile(actor: AuthUser, attachmentId: number): Promise<{ attachment: Attachment; data: Buffer }> {
     const attachment = await this.loadAuthorized(actor, attachmentId);
     return { attachment, data: await this.storage.read(attachment.fileUrl) };
   }
 
   /** Uploader or admin only. */
-  async deleteAttachment(actor: Actor, attachmentId: number): Promise<void> {
+  async deleteAttachment(actor: AuthUser, attachmentId: number): Promise<void> {
     const attachment = await this.loadAuthorized(actor, attachmentId);
-    if (attachment.uploadedBy !== actor.userId && !isAdmin(actor)) throw new ForbiddenError('Only the uploader or an admin can delete an attachment');
+    if (attachment.uploadedBy !== actor.id && !isAdmin(actor)) throw new ForbiddenError('Only the uploader or an admin can delete an attachment');
     await this.db.transaction(async (tx) => {
       await this.attachments.delete(attachmentId, tx);
-      await this.audit.record({ actorId: actor.userId, action: 'ATTACHMENT_DELETED', entityType: 'TICKET', entityId: attachment.ticketId, metadata: { attachmentId } }, tx);
+      await this.audit.record({ actorId: actor.id, action: 'ATTACHMENT_DELETED', entityType: 'TICKET', entityId: attachment.ticketId, metadata: { attachmentId } }, tx);
     });
     await this.storage.delete(attachment.fileUrl).catch(() => undefined);
   }
 
-  private async loadAuthorized(actor: Actor, attachmentId: number): Promise<Attachment> {
+  private async loadAuthorized(actor: AuthUser, attachmentId: number): Promise<Attachment> {
     const attachment = await this.attachments.findById(attachmentId);
     if (!attachment) throw new NotFoundError('Attachment', attachmentId);
     const ticket = await this.tickets.findById(attachment.ticketId);

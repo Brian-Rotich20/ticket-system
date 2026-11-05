@@ -1,13 +1,15 @@
 import { and, asc, count, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import type { Database, Executor } from '../config/db.js';
-import type { Priority, TicketStatus } from '../model/enums.js';
+import type { Priority, TicketStatus, TicketType } from '../model/enums.js';
 import { tickets, type NewTicket, type Ticket } from '../model/schema.js';
+
 
 export interface TicketFilter {
   status?: TicketStatus;
   priority?: Priority;
-  assigneeId?: number;
-  requesterId?: number;
+  type?: TicketType;
+  assigneeId?: string;
+  requesterId?: string;
   q?: string;
 }
 export interface TicketListOptions {
@@ -16,9 +18,10 @@ export interface TicketListOptions {
   sortBy: 'createdAt' | 'updatedAt';
   order: 'asc' | 'desc';
 }
-export type TicketChanges = Partial<Pick<Ticket, 'status' | 'priority' | 'assigneeId'>>;
+export type TicketChanges = Partial<Pick<Ticket, 'status' | 'priority' | 'type' | 'assigneeId'>>;
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, '\\$&');
+const inTenant = (tenantId: string, id: number) => and(eq(tickets.tenantId, tenantId), eq(tickets.ticketId, id));
 
 export class TicketRepository {
   constructor(private readonly db: Database) {}
@@ -28,31 +31,32 @@ export class TicketRepository {
     return row!;
   }
 
-  async findById(id: number, ex: Executor = this.db): Promise<Ticket | null> {
-    const [row] = await ex.select().from(tickets).where(eq(tickets.ticketId, id)).limit(1);
+  async findById(tenantId: string, id: number, ex: Executor = this.db): Promise<Ticket | null> {
+    const [row] = await ex.select().from(tickets).where(inTenant(tenantId, id)).limit(1);
     return row ?? null;
   }
 
   /** Row lock (SELECT ... FOR UPDATE): serialises concurrent updates on the same ticket. Use inside a transaction. */
-  async findByIdForUpdate(id: number, ex: Executor): Promise<Ticket | null> {
-    const [row] = await ex.select().from(tickets).where(eq(tickets.ticketId, id)).limit(1).for('update');
+  async findByIdForUpdate(tenantId: string, id: number, ex: Executor): Promise<Ticket | null> {
+    const [row] = await ex.select().from(tickets).where(inTenant(tenantId, id)).limit(1).for('update');
     return row ?? null;
   }
 
   /** Compare-and-set on `version`. Returns null if the row changed underneath us. */
-  async update(id: number, expectedVersion: number, changes: TicketChanges, ex: Executor = this.db): Promise<Ticket | null> {
+  async update(tenantId: string, id: number, expectedVersion: number, changes: TicketChanges, ex: Executor = this.db): Promise<Ticket | null> {
     const [row] = await ex
       .update(tickets)
       .set({ ...changes, version: sql`${tickets.version} + 1`, updatedAt: new Date() })
-      .where(and(eq(tickets.ticketId, id), eq(tickets.version, expectedVersion)))
+      .where(and(inTenant(tenantId, id), eq(tickets.version, expectedVersion)))
       .returning();
     return row ?? null;
   }
 
-  async list(filter: TicketFilter, opts: TicketListOptions, ex: Executor = this.db) {
+  async list( tenantId: string, filter: TicketFilter, opts: TicketListOptions, ex: Executor = this.db) {
     const conds: (SQL | undefined)[] = [
       filter.status && eq(tickets.status, filter.status),
       filter.priority && eq(tickets.priority, filter.priority),
+      filter.type && eq(tickets.type, filter.type),
       filter.assigneeId !== undefined ? eq(tickets.assigneeId, filter.assigneeId) : undefined,
       filter.requesterId !== undefined ? eq(tickets.requesterId, filter.requesterId) : undefined,
       filter.q

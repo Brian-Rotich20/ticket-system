@@ -12,10 +12,10 @@ import { canTransition, type TicketStatus } from '../model/enums.js';
 import type { Ticket, User } from '../model/schema.js';
 import type { TicketChanges, TicketRepository } from '../repository/ticket.repository.js';
 import type { UserRepository } from '../repository/user.repository.js';
-import type { Actor } from './actor.js';
+import type { AuthUser } from '../auth/auth-user.js'
 import type { AuditService } from './audit.service.js';
 import type { NotificationService } from './notification.service.js';
-import { assertCanAssign, assertCanChangePriority, assertCanChangeStatus, assertCanView } from './policy.js';
+import { assertCanAssign, assertCanTriage, assertCanChangeStatus, assertCanView } from './policy.js';
 
 type TicketEvent =
   | { type: 'assigned'; ticket: Ticket; assignee: User; previousAssigneeId: number | null }
@@ -30,14 +30,12 @@ export class TicketService {
     private readonly notifier: NotificationService,
   ) {}
 
-  async createTicket(actor: Actor, input: CreateTicketInput): Promise<Ticket> {
+  async createTicket(actor: AuthUser, input: CreateTicketInput): Promise<Ticket> {
     const ticket = await this.db.transaction(async (tx) => {
-      const created = await this.tickets.insert(
-        { title: input.title, description: input.description, priority: input.priority, requesterId: actor.userId },
-        tx,
-      );
+      const created = await this.tickets.insert({ tenantId: actor.tenantId, title: input.title, description: input.description,
+                      type: input.type, priority: input.priority, requesterId: actor.id }, tx);
       await this.audit.record(
-        { actorId: actor.userId, action: 'TICKET_CREATED', entityType: 'TICKET', entityId: created.ticketId, metadata: { priority: created.priority } },
+        { actorId: actor.id, action: 'TICKET_CREATED', entityType: 'TICKET', entityId: created.ticketId, metadata: { priority: created.priority } },
         tx,
       );
       return created;
@@ -46,45 +44,45 @@ export class TicketService {
     return ticket;
   }
 
-  async getTicketById(actor: Actor, ticketId: number): Promise<Ticket> {
+  async getTicketById(actor: AuthUser, ticketId: number): Promise<Ticket> {
     const ticket = await this.tickets.findById(ticketId);
     if (!ticket) throw new NotFoundError('Ticket', ticketId);
     assertCanView(actor, ticket);
     return ticket;
   }
 
-  updateTicketStatus(actor: Actor, ticketId: number, status: TicketStatus, version?: number) {
+  updateTicketStatus(actor: AuthUser, ticketId: number, status: TicketStatus, version?: number) {
     return this.mutate(actor, ticketId, { status, version });
   }
 
-  assignTicket(actor: Actor, ticketId: number, agentId: number | null, version?: number) {
+  assignTicket(actor: AuthUser, ticketId: number, agentId: number | null, version?: number) {
     return this.mutate(actor, ticketId, { assigneeId: agentId, version });
   }
 
   /** PATCH /tickets/{id}: status, priority and assignee in ONE atomic, row-locked transaction. */
-  updateTicket(actor: Actor, ticketId: number, patch: UpdateTicketInput) {
+  updateTicket(actor: AuthUser, ticketId: number, patch: UpdateTicketInput) {
     return this.mutate(actor, ticketId, patch);
   }
 
   /** GET /tickets: customers are always scoped to their own tickets; staff see everything. */
-  async getTickets(actor: Actor, q: TicketFilterQuery) {
+  async getTickets(actor: AuthUser, q: TicketFilterQuery) {
     const filter = { status: q.status, priority: q.priority, assigneeId: q.assigneeId, requesterId: q.requesterId };
-    if (actor.role === 'CUSTOMER') filter.requesterId = actor.userId;
+    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
     return this.page(filter, q);
   }
 
   /** GET /tickets/search?q= */
-  async searchTickets(actor: Actor, q: TicketSearchQuery) {
+  async searchTickets(actor: AuthUser, q: TicketSearchQuery) {
     const filter = { status: q.status, priority: q.priority, assigneeId: q.assigneeId, requesterId: q.requesterId, q: q.q };
-    if (actor.role === 'CUSTOMER') filter.requesterId = actor.userId;
+    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
     return this.page(filter, q);
   }
 
   /** GET /tickets/my: tickets assigned to me (staff) / tickets I raised (customer). */
-  async getMyTickets(actor: Actor, q: TicketFilterQuery) {
+  async getMyTickets(actor: AuthUser, q: TicketFilterQuery) {
     const filter = { status: q.status, priority: q.priority } as { status?: TicketStatus; priority?: Ticket['priority']; assigneeId?: number; requesterId?: number };
-    if (actor.role === 'CUSTOMER') filter.requesterId = actor.userId;
-    else filter.assigneeId = actor.userId;
+    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
+    else filter.assigneeId = actor.id;
     return this.page(filter, q);
   }
 
@@ -98,7 +96,7 @@ export class TicketService {
     return toPage(items, total, q);
   }
 
-  private async mutate(actor: Actor, ticketId: number, patch: UpdateTicketInput): Promise<Ticket> {
+  private async mutate(actor: AuthUser, ticketId: number, patch: UpdateTicketInput): Promise<Ticket> {
     const { ticket, events } = await this.db.transaction(async (tx) => {
       const current = await this.tickets.findByIdForUpdate(ticketId, tx); // serialises concurrent updates
       if (!current) throw new NotFoundError('Ticket', ticketId);
@@ -157,7 +155,7 @@ export class TicketService {
 
       // 3) priority
       if (patch.priority !== undefined && patch.priority !== current.priority) {
-        assertCanChangePriority(actor, { assigneeId });
+        assertCanTriage (actor, { assigneeId });
         changes.priority = patch.priority;
         audits.push({ action: 'TICKET_PRIORITY_CHANGED', metadata: { from: current.priority, to: patch.priority } });
       }
@@ -167,7 +165,7 @@ export class TicketService {
       const updated = await this.tickets.update(ticketId, current.version, changes, tx);
       if (!updated) throw new ConflictError('Ticket was modified concurrently. Reload and retry.', 'VERSION_CONFLICT');
       for (const a of audits) {
-        await this.audit.record({ actorId: actor.userId, action: a.action, entityType: 'TICKET', entityId: ticketId, metadata: a.metadata }, tx);
+        await this.audit.record({ actorId: actor.id, action: a.action, entityType: 'TICKET', entityId: ticketId, metadata: a.metadata }, tx);
       }
       if (assignmentChanged && newAssignee) {
         events.push({ type: 'assigned', ticket: updated, assignee: newAssignee, previousAssigneeId: current.assigneeId });

@@ -1,6 +1,6 @@
 import { ForbiddenError, NotFoundError } from '../exception/errors.js';
 import type { TicketStatus } from '../model/enums.js';
-import type { Actor } from './actor.js';
+import type { AuthUser } from '../auth/auth-user.js'
 
 /**
  * Role-based permissions (User / Agent / Admin). Pure functions, so they are trivially unit-testable.
@@ -10,45 +10,46 @@ import type { Actor } from './actor.js';
  *   ADMIN     - everything, including re-assignment of in-progress tickets
  */
 interface TicketLike {
-  requesterId: number;
-  assigneeId: number | null;
+  tenantId: string;
+  requesterId: string;
+  assigneeId: string | null;
 }
 
-const isStaff = (a: Actor) => a.role === 'AGENT' || a.role === 'ADMIN';
+const isStaff = (a: AuthUser) => a.role === 'AGENT' || a.role === 'ADMIN';
 
-export function canView(actor: Actor, t: TicketLike): boolean {
-  return isStaff(actor) || t.requesterId === actor.userId;
-}
+export const canView = (actor: AuthUser, t: TicketLike) =>
+  t.tenantId === actor.tenantId && (isStaff(actor) || t.requesterId === actor.id);
+
 
 /** Customers get 404 (not 403) for tickets they don't own, so ticket ids can't be probed. */
-export function assertCanView(actor: Actor, t: TicketLike & { ticketId: number }): void {
+export function assertCanView(actor: AuthUser, t: TicketLike & { ticketId: string }): void {
   if (!canView(actor, t)) throw new NotFoundError('Ticket', t.ticketId);
 }
 
-export function assertCanAssign(actor: Actor, t: Pick<TicketLike, 'assigneeId'>, newAssigneeId: number | null): void {
+export function assertCanAssign(actor: AuthUser, t: Pick<TicketLike, 'assigneeId'>, newAssigneeId: string | null): void {
   if (actor.role === 'ADMIN') return;
-  const selfAssign = actor.role === 'AGENT' && t.assigneeId === null && newAssigneeId === actor.userId;
+  const selfAssign = actor.role === 'AGENT' && t.assigneeId === null && newAssigneeId === actor.id;
   if (!selfAssign) {
     throw new ForbiddenError('Agents can only assign unassigned tickets to themselves; ask an admin to reassign');
   }
 }
 
-export function assertCanChangeStatus(actor: Actor, t: TicketLike, from: TicketStatus, to: TicketStatus): void {
+export function assertCanChangeStatus(actor: AuthUser, t: TicketLike, from: TicketStatus, to: TicketStatus): void {
   if (actor.role === 'ADMIN') return;
-  if (actor.role === 'AGENT' && t.assigneeId === actor.userId) return;
-  if (actor.role === 'CUSTOMER' && t.requesterId === actor.userId && from === 'RESOLVED' && to === 'CLOSED') return;
+  if (actor.role === 'AGENT' && t.assigneeId === actor.id) return;
+  if (actor.role === 'CUSTOMER' && t.requesterId === actor.id && from === 'RESOLVED' && to === 'CLOSED') return;
   throw new ForbiddenError('You are not allowed to change this ticket\'s status');
 }
 
-export function assertCanChangePriority(actor: Actor, t: Pick<TicketLike, 'assigneeId'>): void {
-  if (actor.role === 'ADMIN' || (actor.role === 'AGENT' && t.assigneeId === actor.userId)) return;
+export function assertCanTriage(actor: AuthUser, t: Pick<TicketLike, 'assigneeId'>): void {
+  if (actor.role === 'ADMIN' || (actor.role === 'AGENT' && t.assigneeId === actor.id)) return;
   throw new ForbiddenError('Only the assigned agent or an admin can change priority');
 }
 
-export function assertRole(actor: Actor, ...roles: Actor['role'][]): void {
+export function assertRole(actor: AuthUser, ...roles: AuthUser['role'][]): void {
   if (!roles.includes(actor.role)) throw new ForbiddenError();
 }
 
-export function isAdmin(actor: Actor): boolean {
+export function isAdmin(actor: AuthUser): boolean {
   return actor.role === 'ADMIN';
 }

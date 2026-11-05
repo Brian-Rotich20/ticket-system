@@ -86,7 +86,6 @@ export async function buildApp(deps: AppDeps) {
   app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found' } }));
 
   app.get('/health', async () => ({ status: 'ok' }));
-  authController(app, userService);
   userController(app, userService, audit);
   ticketController(app, ticketService, commentService);
   attachmentController(app, attachmentService);

@@ -6,34 +6,26 @@ import { users, type NewUser, type User } from '../model/schema.js';
 export class UserRepository {
   constructor(private readonly db: Database) {}
 
-  async findById(id: number, ex: Executor = this.db): Promise<User | null> {
-    const [row] = await ex.select().from(users).where(eq(users.userId, id)).limit(1);
+  async findById(tenantId: string, id: string, ex: Executor = this.db) {
+    const [row] = await ex.select().from(users).where(and(eq(users.tenantId, tenantId), eq(users.id, id))).limit(1);
     return row ?? null;
   }
-
-  async findByEmail(email: string, ex: Executor = this.db): Promise<User | null> {
-    const [row] = await ex.select().from(users).where(eq(users.email, email)).limit(1);
-    return row ?? null;
-  }
-
-  async findManyByIds(ids: number[], ex: Executor = this.db): Promise<User[]> {
+  async findManyByIds(tenantId: string, ids: string[], ex: Executor = this.db) {
     if (ids.length === 0) return [];
-    return ex.select().from(users).where(inArray(users.userId, ids));
+    return ex.select().from(users).where(and(eq(users.tenantId, tenantId), inArray(users.id, ids)));
   }
-
-  async insert(values: NewUser, ex: Executor = this.db): Promise<User> {
-    const [row] = await ex.insert(users).values(values).returning();
-    return row!;
+  async listByRole(tenantId: string, role: UserRole, ex: Executor = this.db) {
+    return ex.select().from(users).where(and(eq(users.tenantId, tenantId), eq(users.role, role)));
   }
-
-  async list(opts: { role?: UserRole; limit: number; offset: number }, ex: Executor = this.db) {
-    const where = opts.role ? eq(users.role, opts.role) : undefined;
-    const items = await ex.select().from(users).where(where).orderBy(users.userId).limit(opts.limit).offset(opts.offset);
+  async setRole(tenantId: string, id: string, role: UserRole, ex: Executor = this.db) {   // new
+    const [row] = await ex.update(users).set({ role, updatedAt: new Date() })
+      .where(and(eq(users.tenantId, tenantId), eq(users.id, id))).returning();
+    return row ?? null;
+  }
+  async list(tenantId: string, opts: { role?: UserRole; limit: number; offset: number }, ex: Executor = this.db) {
+    const where = and(eq(users.tenantId, tenantId), opts.role ? eq(users.role, opts.role) : undefined);
+    const items = await ex.select().from(users).where(where).orderBy(users.createdAt, users.id).limit(opts.limit).offset(opts.offset);
     const [{ total } = { total: 0 }] = await ex.select({ total: count() }).from(users).where(where);
     return { items, total };
-  }
-
-  async listByRole(role: UserRole, ex: Executor = this.db): Promise<User[]> {
-    return ex.select().from(users).where(and(eq(users.role, role)));
   }
 }

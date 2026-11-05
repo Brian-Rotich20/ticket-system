@@ -1,6 +1,17 @@
-import { bigint, bigserial, index, integer, jsonb, pgEnum, pgTable, text, timestamp, varchar, boolean} from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  bigserial,
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  varchar,
+} from 'drizzle-orm/pg-core';
 import { PRIORITIES, TICKET_STATUSES, TICKET_TYPES, USER_ROLES } from './enums.js';
-// import { boolean } from 'zod/v3';
 
 export const ticketStatusEnum = pgEnum('ticket_status', TICKET_STATUSES);
 export const ticketTypeEnum = pgEnum('ticket_type', TICKET_TYPES);
@@ -8,18 +19,18 @@ export const priorityEnum = pgEnum('priority', PRIORITIES);
 export const userRoleEnum = pgEnum('user_role', USER_ROLES);
 
 const ts = (name: string) => timestamp(name, { withTimezone: true }).notNull().defaultNow();
-const id = (name: string) => bigserial(name, { mode: 'number' }).primaryKey();
-const fk = (name: string) => bigint(name, { mode: 'number' });
-const userFk = (name: string) => text(name); // user ids are strings now (keep ts, id, fk as they are)
+const id = (name: string) => bigserial(name, { mode: 'number' }).primaryKey(); // numeric ids: tickets, comments, attachments, audit
+const fk = (name: string) => bigint(name, { mode: 'number' }); // FK to a numeric id
+const userFk = (name: string) => text(name); // user ids are strings (Better Auth)
 
-
+/** A tenant = one business/store. `id` is a slug such as "acme-store". */
 export const tenants = pgTable('tenants', {
-  id: text('id').primaryKey(), // slug, e.g. "acme-store"
+  id: text('id').primaryKey(),
   name: varchar('name', { length: 120 }).notNull(),
   createdAt: ts('created_at'),
 });
 
-
+// ---- Better Auth tables (adapter maps them by key: user, session, account, verification) ----
 export const users = pgTable(
   'users',
   {
@@ -72,29 +83,32 @@ export const verifications = pgTable('verification', {
   updatedAt: ts('updated_at'),
 });
 
-
+// ---- Support domain ----
 export const tickets = pgTable(
   'tickets',
   {
     ticketId: id('ticket_id'),
+    tenantId: text('tenant_id').notNull().references(() => tenants.id),
     title: varchar('title', { length: 200 }).notNull(),
     description: text('description').notNull(),
+    /** Structured classification: customer inquiry, IT request or internal issue. */
+    type: ticketTypeEnum('type').notNull().default('INQUIRY'),
     status: ticketStatusEnum('status').notNull().default('OPEN'),
     priority: priorityEnum('priority').notNull().default('MEDIUM'),
-    tenantId: text('tenant_id').notNull().references(() => tenants.id),            // add
-    type: ticketTypeEnum('type').notNull().default('INQUIRY'),                      // add
-    requesterId: userFk('requester_id').notNull().references(() => users.id),       // was fk(...) -> users.userId
-    assigneeId: userFk('assignee_id').references(() => users.id),                   // same
+    requesterId: userFk('requester_id').notNull().references(() => users.id),
+    assigneeId: userFk('assignee_id').references(() => users.id),
     /** Optimistic-lock counter: bumped on every ticket mutation (concurrent-update edge case). */
     version: integer('version').notNull().default(1),
     createdAt: ts('created_at'),
     updatedAt: ts('updated_at'),
   },
+  // every query is tenant-scoped, so every index starts with tenant_id
   (t) => [
-    index('idx_tickets_status').on(t.status),
-    index('idx_tickets_assignee_id').on(t.assigneeId),
-    index('idx_tickets_requester_id').on(t.requesterId),
-    index('idx_tickets_created_at').on(t.createdAt),
+    index('idx_tickets_tenant_status').on(t.tenantId, t.status),
+    index('idx_tickets_tenant_type').on(t.tenantId, t.type),
+    index('idx_tickets_tenant_assignee').on(t.tenantId, t.assigneeId),
+    index('idx_tickets_tenant_requester').on(t.tenantId, t.requesterId),
+    index('idx_tickets_tenant_created').on(t.tenantId, t.createdAt),
   ],
 );
 
@@ -115,7 +129,7 @@ export const attachments = pgTable(
   {
     attachmentId: id('attachment_id'),
     ticketId: fk('ticket_id').notNull().references(() => tickets.ticketId, { onDelete: 'cascade' }),
-    /** Storage key (local path or S3 key). The public/download URL is resolved by AttachmentService. */
+    /** Storage key (Cloudinary public id / local path). Clients never see it; downloads go through the API. */
     fileUrl: text('file_url').notNull(),
     fileName: varchar('file_name', { length: 255 }).notNull(),
     fileType: varchar('file_type', { length: 100 }).notNull(),
@@ -132,20 +146,19 @@ export const auditLogs = pgTable(
     auditId: id('audit_id'),
     tenantId: text('tenant_id').notNull().references(() => tenants.id),
     actorId: userFk('actor_id').references(() => users.id),
-    entityId: text('entity_id').notNull(),
     action: varchar('action', { length: 60 }).notNull(),
     entityType: varchar('entity_type', { length: 30 }).notNull(),
+    entityId: text('entity_id').notNull(),
     metadata: jsonb('metadata').$type<Record<string, unknown>>(),
     createdAt: ts('created_at'),
   },
   (t) => [
-    index('idx_audit_entity').on(t.entityType, t.entityId), index('idx_audit_created_at').on(t.createdAt),
     index('idx_audit_tenant_entity').on(t.tenantId, t.entityType, t.entityId),
     index('idx_audit_tenant_created').on(t.tenantId, t.createdAt),
   ],
-
 );
 
+export type Tenant = typeof tenants.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Ticket = typeof tickets.$inferSelect;
@@ -153,4 +166,3 @@ export type NewTicket = typeof tickets.$inferInsert;
 export type Comment = typeof comments.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
-export type Tenant = typeof tenants.$inferSelect;

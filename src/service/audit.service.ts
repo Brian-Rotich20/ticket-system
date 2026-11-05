@@ -2,7 +2,7 @@ import type { Executor } from '../config/db.js';
 import type { AuditQuery } from '../dto/user.dto.js';
 import { toPage } from '../dto/common.dto.js';
 import type { AuditEntry, AuditRepository } from '../repository/audit.repository.js';
-import type { Actor } from './actor.js';
+import type { AuthUser } from '../auth/auth-user.js'
 import { assertRole } from './policy.js';
 
 export class AuditService {
@@ -13,9 +13,9 @@ export class AuditService {
     return this.repo.insert(entry, ex);
   }
 
-  async list(actor: Actor, q: AuditQuery) {
+  async list(actor: AuthUser, q: AuditQuery) {
     assertRole(actor, 'ADMIN');
-    const { items, total } = await this.repo.list(q, { limit: q.pageSize, offset: (q.page - 1) * q.pageSize });
+    const { items, total } = await this.repo.list(actor.tenantId, q, { limit: q.pageSize, offset: (q.page - 1) * q.pageSize });
     return toPage(items, total, q);
   }
 }
