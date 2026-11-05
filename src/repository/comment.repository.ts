@@ -2,10 +2,11 @@ import { asc, count, eq } from 'drizzle-orm';
 import type { Database, Executor } from '../config/db.js';
 import { comments, type Comment } from '../model/schema.js';
 
+/** Tenant isolation is enforced one level up: callers always load the (tenant-scoped) ticket first. */
 export class CommentRepository {
   constructor(private readonly db: Database) {}
 
-  async insert(values: { ticketId: number; authorId: number; text: string }, ex: Executor = this.db): Promise<Comment> {
+  async insert(values: { ticketId: number; authorId: string; text: string }, ex: Executor = this.db): Promise<Comment> {
     const [row] = await ex.insert(comments).values(values).returning();
     return row!;
   }

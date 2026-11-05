@@ -10,8 +10,9 @@ interface Logger {
 const oneLine = (s: string) => s.replace(/[\r\n]+/g, ' ').slice(0, 120);
 
 /**
- * Notifies users/agents on important updates (assignment, status change, new comment).
- * Fire-and-forget: a failing mail provider must never fail or slow down the API request.
+ * Notifies users/agents on important updates (new ticket, assignment, status change, new comment).
+ * Fire-and-forget: a failing mail provider must never fail or slow down an API request.
+ * Recipients are always looked up inside the ticket's own tenant.
  */
 export class NotificationService {
   private readonly pending = new Set<Promise<void>>();
@@ -22,27 +23,28 @@ export class NotificationService {
     private readonly log: Logger,
   ) {}
 
-  /** Resolves when all in-flight notifications are done (used by tests and graceful shutdown). */
+  /** Resolves when all in-flight notifications are done (tests, graceful shutdown). */
   async flush(): Promise<void> {
     await Promise.allSettled([...this.pending]);
   }
 
   notifyOnTicketCreate(ticket: Ticket): void {
     this.fire(async () => {
-      const agents = await this.users.listByRole('AGENT');
+      const agents = await this.users.listByRole(ticket.tenantId, 'AGENT');
       await this.send(
         agents.map((a) => a.email),
-        `[Ticket #${ticket.ticketId}] New ${ticket.priority} ticket: ${oneLine(ticket.title)}`,
-        `A new ticket was created and is waiting for an agent.\n\n${ticket.title}\n\n${ticket.description}`,
+        `[Ticket #${ticket.ticketId}] New ${ticket.priority} ${ticket.type}: ${oneLine(ticket.title)}`,
+        `A new ticket is waiting for an agent.\n\n${ticket.title}\n\n${ticket.description}`,
       );
     });
   }
 
-  notifyOnAssignment(ticket: Ticket, agent: User, previousAssigneeId: number | null): void {
+  notifyOnAssignment(ticket: Ticket, agent: User, previousAssigneeId: string | null): void {
     this.fire(async () => {
-      const [requester, previous] = await this.users.findManyByIds(
-        [ticket.requesterId, ...(previousAssigneeId ? [previousAssigneeId] : [])],
-      ).then((rows) => [rows.find((r) => r.userId === ticket.requesterId), rows.find((r) => r.userId === previousAssigneeId)]);
+      const ids = [ticket.requesterId, ...(previousAssigneeId ? [previousAssigneeId] : [])];
+      const rows = await this.users.findManyByIds(ticket.tenantId, ids);
+      const requester = rows.find((r) => r.id === ticket.requesterId);
+      const previous = rows.find((r) => r.id === previousAssigneeId);
       const subject = `[Ticket #${ticket.ticketId}] Assigned to ${agent.name}`;
       await this.send([agent.email], subject, `You have been assigned ticket #${ticket.ticketId}: ${ticket.title}`);
       if (requester) await this.send([requester.email], subject, `Your ticket is now being handled by ${agent.name}.`);
@@ -53,7 +55,7 @@ export class NotificationService {
   notifyOnComment(ticket: Ticket, comment: Comment): void {
     this.fire(async () => {
       const ids = [ticket.requesterId, ...(ticket.assigneeId ? [ticket.assigneeId] : [])].filter((id) => id !== comment.authorId);
-      const recipients = await this.users.findManyByIds(ids);
+      const recipients = await this.users.findManyByIds(ticket.tenantId, ids);
       await this.send(
         recipients.map((r) => r.email),
         `[Ticket #${ticket.ticketId}] New comment`,
@@ -65,7 +67,7 @@ export class NotificationService {
   notifyOnStatusChange(ticket: Ticket, oldStatus: TicketStatus, newStatus: TicketStatus): void {
     this.fire(async () => {
       const ids = [ticket.requesterId, ...(ticket.assigneeId ? [ticket.assigneeId] : [])];
-      const recipients = await this.users.findManyByIds(ids);
+      const recipients = await this.users.findManyByIds(ticket.tenantId, ids);
       await this.send(
         recipients.map((r) => r.email),
         `[Ticket #${ticket.ticketId}] Status: ${oldStatus} -> ${newStatus}`,

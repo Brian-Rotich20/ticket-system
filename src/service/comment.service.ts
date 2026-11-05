@@ -1,11 +1,11 @@
+import type { AuthUser } from '../auth/auth-user.js';
 import type { Database } from '../config/db.js';
-import { toPage, type PaginationQuery } from '../dto/common.dto.js';
 import type { CreateCommentInput } from '../dto/comment.dto.js';
+import { toPage, type PaginationQuery } from '../dto/common.dto.js';
 import { ForbiddenError, NotFoundError, TicketClosedError } from '../exception/errors.js';
 import type { Comment } from '../model/schema.js';
 import type { CommentRepository } from '../repository/comment.repository.js';
 import type { TicketRepository } from '../repository/ticket.repository.js';
-import type { AuthUser } from '../auth/auth-user.js'
 import type { AuditService } from './audit.service.js';
 import type { NotificationService } from './notification.service.js';
 import { assertCanView, isAdmin } from './policy.js';
@@ -21,12 +21,22 @@ export class CommentService {
 
   async addComment(actor: AuthUser, ticketId: number, input: CreateCommentInput): Promise<Comment> {
     const { comment, ticket } = await this.db.transaction(async (tx) => {
-      const ticket = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx); // no comment lands on a ticket that is being closed
+      const ticket = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx); // nothing lands on a ticket that is being closed
       if (!ticket) throw new NotFoundError('Ticket', ticketId);
       assertCanView(actor, ticket);
       if (ticket.status === 'CLOSED') throw new TicketClosedError(ticketId);
       const comment = await this.comments.insert({ ticketId, authorId: actor.id, text: input.text }, tx);
-      await this.audit.record({ tenantId: actor.tenantId, actorId: actor.id, action: 'COMMENT_ADDED', entityType: 'TICKET', entityId: ticketId, metadata: { commentId: comment.commentId } }, tx);
+      await this.audit.record(
+        {
+          tenantId: actor.tenantId,
+          actorId: actor.id,
+          action: 'COMMENT_ADDED',
+          entityType: 'TICKET',
+          entityId: ticketId,
+          metadata: { commentId: comment.commentId },
+        },
+        tx,
+      );
       return { comment, ticket };
     });
     this.notifier.notifyOnComment(ticket, comment);
@@ -46,12 +56,22 @@ export class CommentService {
     await this.db.transaction(async (tx) => {
       const comment = await this.comments.findById(commentId, tx);
       if (!comment) throw new NotFoundError('Comment', commentId);
-      const ticket = await this.tickets.findById(comment.ticketId, tx);
-      if (!ticket) throw new NotFoundError('Ticket', comment.ticketId);
+      const ticket = await this.tickets.findById(actor.tenantId, comment.ticketId, tx); // another tenant's comment => not found
+      if (!ticket) throw new NotFoundError('Comment', commentId);
       assertCanView(actor, ticket);
       if (comment.authorId !== actor.id && !isAdmin(actor)) throw new ForbiddenError('Only the author or an admin can delete a comment');
       await this.comments.delete(commentId, tx);
-      await this.audit.record({ tenantId: actor.tenantId,  actorId: actor.id, action: 'COMMENT_DELETED', entityType: 'TICKET', entityId: ticket.ticketId, metadata: { commentId } }, tx);
+      await this.audit.record(
+        {
+          tenantId: actor.tenantId,
+          actorId: actor.id,
+          action: 'COMMENT_DELETED',
+          entityType: 'TICKET',
+          entityId: ticket.ticketId,
+          metadata: { commentId },
+        },
+        tx,
+      );
     });
   }
 }

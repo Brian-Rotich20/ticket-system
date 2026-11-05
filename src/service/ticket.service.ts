@@ -1,3 +1,4 @@
+import type { AuthUser } from '../auth/auth-user.js';
 import type { Database } from '../config/db.js';
 import { toPage } from '../dto/common.dto.js';
 import type { CreateTicketInput, TicketFilterQuery, TicketSearchQuery, UpdateTicketInput } from '../dto/ticket.dto.js';
@@ -10,15 +11,14 @@ import {
 } from '../exception/errors.js';
 import { canTransition, type TicketStatus } from '../model/enums.js';
 import type { Ticket, User } from '../model/schema.js';
-import type { TicketChanges, TicketRepository } from '../repository/ticket.repository.js';
+import type { TicketChanges, TicketFilter, TicketRepository } from '../repository/ticket.repository.js';
 import type { UserRepository } from '../repository/user.repository.js';
-import type { AuthUser } from '../auth/auth-user.js'
 import type { AuditService } from './audit.service.js';
 import type { NotificationService } from './notification.service.js';
-import { assertCanAssign, assertCanTriage, assertCanChangeStatus, assertCanView } from './policy.js';
+import { assertCanAssign, assertCanChangeStatus, assertCanTriage, assertCanView } from './policy.js';
 
 type TicketEvent =
-  | { type: 'assigned'; ticket: Ticket; assignee: User; previousAssigneeId: number | null }
+  | { type: 'assigned'; ticket: Ticket; assignee: User; previousAssigneeId: string | null }
   | { type: 'status'; ticket: Ticket; oldStatus: TicketStatus; newStatus: TicketStatus };
 
 export class TicketService {
@@ -32,10 +32,26 @@ export class TicketService {
 
   async createTicket(actor: AuthUser, input: CreateTicketInput): Promise<Ticket> {
     const ticket = await this.db.transaction(async (tx) => {
-      const created = await this.tickets.insert({ tenantId: actor.tenantId, title: input.title, description: input.description,
-                      type: input.type, priority: input.priority, requesterId: actor.id }, tx);
+      const created = await this.tickets.insert(
+        {
+          tenantId: actor.tenantId,
+          title: input.title,
+          description: input.description,
+          type: input.type,
+          priority: input.priority,
+          requesterId: actor.id,
+        },
+        tx,
+      );
       await this.audit.record(
-        { actorId: actor.id, action: 'TICKET_CREATED', entityType: 'TICKET', entityId: created.ticketId, metadata: { priority: created.priority } },
+        {
+          tenantId: actor.tenantId,
+          actorId: actor.id,
+          action: 'TICKET_CREATED',
+          entityType: 'TICKET',
+          entityId: created.ticketId,
+          metadata: { type: created.type, priority: created.priority },
+        },
         tx,
       );
       return created;
@@ -45,7 +61,7 @@ export class TicketService {
   }
 
   async getTicketById(actor: AuthUser, ticketId: number): Promise<Ticket> {
-    const ticket = await this.tickets.findById(ticketId);
+    const ticket = await this.tickets.findById(actor.tenantId, ticketId);
     if (!ticket) throw new NotFoundError('Ticket', ticketId);
     assertCanView(actor, ticket);
     return ticket;
@@ -55,39 +71,40 @@ export class TicketService {
     return this.mutate(actor, ticketId, { status, version });
   }
 
-  assignTicket(actor: AuthUser, ticketId: number, agentId: number | null, version?: number) {
+  assignTicket(actor: AuthUser, ticketId: number, agentId: string | null, version?: number) {
     return this.mutate(actor, ticketId, { assigneeId: agentId, version });
   }
 
-  /** PATCH /tickets/{id}: status, priority and assignee in ONE atomic, row-locked transaction. */
+  /** PATCH /tickets/{id}: status, priority, type and assignee in ONE atomic, row-locked transaction. */
   updateTicket(actor: AuthUser, ticketId: number, patch: UpdateTicketInput) {
     return this.mutate(actor, ticketId, patch);
   }
 
-  /** GET /tickets: customers are always scoped to their own tickets; staff see everything. */
-  async getTickets(actor: AuthUser, q: TicketFilterQuery) {
-    const filter = { status: q.status, priority: q.priority, assigneeId: q.assigneeId, requesterId: q.requesterId };
-    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
-    return this.page(filter, q);
+  /** Customers are always scoped to their own tickets; staff see the whole tenant. */
+  getTickets(actor: AuthUser, q: TicketFilterQuery) {
+    return this.page(actor, { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, requesterId: q.requesterId }, q);
   }
 
   /** GET /tickets/search?q= */
-  async searchTickets(actor: AuthUser, q: TicketSearchQuery) {
-    const filter = { status: q.status, priority: q.priority, assigneeId: q.assigneeId, requesterId: q.requesterId, q: q.q };
-    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
-    return this.page(filter, q);
+  searchTickets(actor: AuthUser, q: TicketSearchQuery) {
+    return this.page(
+      actor,
+      { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, requesterId: q.requesterId, q: q.q },
+      q,
+    );
   }
 
   /** GET /tickets/my: tickets assigned to me (staff) / tickets I raised (customer). */
-  async getMyTickets(actor: AuthUser, q: TicketFilterQuery) {
-    const filter = { status: q.status, priority: q.priority } as { status?: TicketStatus; priority?: Ticket['priority']; assigneeId?: number; requesterId?: number };
+  getMyTickets(actor: AuthUser, q: TicketFilterQuery) {
+    const filter: TicketFilter = { status: q.status, priority: q.priority, type: q.type };
     if (actor.role === 'CUSTOMER') filter.requesterId = actor.id;
     else filter.assigneeId = actor.id;
-    return this.page(filter, q);
+    return this.page(actor, filter, q);
   }
 
-  private async page(filter: Parameters<TicketRepository['list']>[0], q: TicketFilterQuery) {
-    const { items, total } = await this.tickets.list(filter, {
+  private async page(actor: AuthUser, filter: TicketFilter, q: TicketFilterQuery) {
+    if (actor.role === 'CUSTOMER') filter.requesterId = actor.id; // customers can never see other people's tickets
+    const { items, total } = await this.tickets.list(actor.tenantId, filter, {
       limit: q.pageSize,
       offset: (q.page - 1) * q.pageSize,
       sortBy: q.sortBy,
@@ -98,7 +115,7 @@ export class TicketService {
 
   private async mutate(actor: AuthUser, ticketId: number, patch: UpdateTicketInput): Promise<Ticket> {
     const { ticket, events } = await this.db.transaction(async (tx) => {
-      const current = await this.tickets.findByIdForUpdate(ticketId, tx); // serialises concurrent updates
+      const current = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx); // serialises concurrent updates
       if (!current) throw new NotFoundError('Ticket', ticketId);
       assertCanView(actor, current);
 
@@ -120,12 +137,12 @@ export class TicketService {
       let newAssignee: User | null = null;
       let assignmentChanged = false;
 
-      const applyAssignment = async (newId: number | null) => {
+      const applyAssignment = async (newId: string | null) => {
         assertCanAssign(actor, { assigneeId }, newId);
         if (newId === null) {
           if (current.status === 'IN_PROGRESS') throw new ConflictError('An in-progress ticket must stay assigned; reassign it instead');
         } else {
-          const agent = await this.users.findById(newId, tx);
+          const agent = await this.users.findById(actor.tenantId, newId, tx); // assignee must belong to the same tenant
           if (!agent || agent.role !== 'AGENT') throw new ValidationError('Assignee must be an existing agent');
           newAssignee = agent;
         }
@@ -142,30 +159,38 @@ export class TicketService {
       if (patch.status !== undefined && patch.status !== current.status) {
         const to = patch.status;
         if (!canTransition(current.status, to)) throw new InvalidStatusTransitionError(current.status, to);
-        // customers get a clean 403 before any assignment logic runs
-        if (actor.role === 'CUSTOMER') assertCanChangeStatus(actor, { requesterId: current.requesterId, assigneeId }, current.status, to);
         if (to === 'IN_PROGRESS' && assigneeId === null) {
-          if (actor.role === 'AGENT') await applyAssignment(actor.userId); // picking up a ticket self-assigns it
+          if (actor.role === 'AGENT') await applyAssignment(actor.id); // picking up a ticket self-assigns it
           else throw new ValidationError('Assign an agent before moving the ticket to IN_PROGRESS');
         }
-        assertCanChangeStatus(actor, { requesterId: current.requesterId, assigneeId }, current.status, to);
+        assertCanChangeStatus(actor, { assigneeId }, current.status, to);
         changes.status = to;
         audits.push({ action: 'TICKET_STATUS_CHANGED', metadata: { from: current.status, to } });
       }
 
       // 3) priority
       if (patch.priority !== undefined && patch.priority !== current.priority) {
-        assertCanTriage (actor, { assigneeId });
+        assertCanTriage(actor, { assigneeId });
         changes.priority = patch.priority;
         audits.push({ action: 'TICKET_PRIORITY_CHANGED', metadata: { from: current.priority, to: patch.priority } });
       }
 
+      // 4) type (re-classify: inquiry / IT request / internal issue)
+      if (patch.type !== undefined && patch.type !== current.type) {
+        assertCanTriage(actor, { assigneeId });
+        changes.type = patch.type;
+        audits.push({ action: 'TICKET_TYPE_CHANGED', metadata: { from: current.type, to: patch.type } });
+      }
+
       if (Object.keys(changes).length === 0) return { ticket: current, events };
 
-      const updated = await this.tickets.update(ticketId, current.version, changes, tx);
+      const updated = await this.tickets.update(actor.tenantId, ticketId, current.version, changes, tx);
       if (!updated) throw new ConflictError('Ticket was modified concurrently. Reload and retry.', 'VERSION_CONFLICT');
       for (const a of audits) {
-        await this.audit.record({ actorId: actor.id, action: a.action, entityType: 'TICKET', entityId: ticketId, metadata: a.metadata }, tx);
+        await this.audit.record(
+          { tenantId: actor.tenantId, actorId: actor.id, action: a.action, entityType: 'TICKET', entityId: ticketId, metadata: a.metadata },
+          tx,
+        );
       }
       if (assignmentChanged && newAssignee) {
         events.push({ type: 'assigned', ticket: updated, assignee: newAssignee, previousAssigneeId: current.assigneeId });

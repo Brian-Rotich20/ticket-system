@@ -3,7 +3,6 @@ import type { Database, Executor } from '../config/db.js';
 import type { Priority, TicketStatus, TicketType } from '../model/enums.js';
 import { tickets, type NewTicket, type Ticket } from '../model/schema.js';
 
-
 export interface TicketFilter {
   status?: TicketStatus;
   priority?: Priority;
@@ -23,6 +22,7 @@ export type TicketChanges = Partial<Pick<Ticket, 'status' | 'priority' | 'type' 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, '\\$&');
 const inTenant = (tenantId: string, id: number) => and(eq(tickets.tenantId, tenantId), eq(tickets.ticketId, id));
 
+/** Every query is scoped by tenantId: a ticket of another tenant simply does not exist for the caller. */
 export class TicketRepository {
   constructor(private readonly db: Database) {}
 
@@ -36,7 +36,7 @@ export class TicketRepository {
     return row ?? null;
   }
 
-  /** Row lock (SELECT ... FOR UPDATE): serialises concurrent updates on the same ticket. Use inside a transaction. */
+  /** SELECT ... FOR UPDATE: serialises concurrent updates on the same ticket. Use inside a transaction. */
   async findByIdForUpdate(tenantId: string, id: number, ex: Executor): Promise<Ticket | null> {
     const [row] = await ex.select().from(tickets).where(inTenant(tenantId, id)).limit(1).for('update');
     return row ?? null;
@@ -52,13 +52,14 @@ export class TicketRepository {
     return row ?? null;
   }
 
-  async list( tenantId: string, filter: TicketFilter, opts: TicketListOptions, ex: Executor = this.db) {
+  async list(tenantId: string, filter: TicketFilter, opts: TicketListOptions, ex: Executor = this.db) {
     const conds: (SQL | undefined)[] = [
+      eq(tickets.tenantId, tenantId),
       filter.status && eq(tickets.status, filter.status),
       filter.priority && eq(tickets.priority, filter.priority),
       filter.type && eq(tickets.type, filter.type),
-      filter.assigneeId !== undefined ? eq(tickets.assigneeId, filter.assigneeId) : undefined,
-      filter.requesterId !== undefined ? eq(tickets.requesterId, filter.requesterId) : undefined,
+      filter.assigneeId ? eq(tickets.assigneeId, filter.assigneeId) : undefined,
+      filter.requesterId ? eq(tickets.requesterId, filter.requesterId) : undefined,
       filter.q
         ? or(ilike(tickets.title, `%${escapeLike(filter.q)}%`), ilike(tickets.description, `%${escapeLike(filter.q)}%`))
         : undefined,

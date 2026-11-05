@@ -19,13 +19,15 @@ export class AuditRepository {
   }
 
   async list(
-    filter: { entityType?: string; entityId?: string | number },
+    tenantId: string,
+    filter: { entityType?: string; entityId?: string },
     opts: { limit: number; offset: number },
     ex: Executor = this.db,
   ): Promise<{ items: AuditLog[]; total: number }> {
     const where = and(
+      eq(auditLogs.tenantId, tenantId),
       filter.entityType ? eq(auditLogs.entityType, filter.entityType) : undefined,
-      filter.entityId !== undefined ? eq(auditLogs.entityId, filter.entityId) : undefined,
+      filter.entityId ? eq(auditLogs.entityId, filter.entityId) : undefined,
     );
     const items = await ex.select().from(auditLogs).where(where).orderBy(desc(auditLogs.auditId)).limit(opts.limit).offset(opts.offset);
     const [{ total } = { total: 0 }] = await ex.select({ total: count() }).from(auditLogs).where(where);

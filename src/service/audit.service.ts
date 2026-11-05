@@ -1,8 +1,8 @@
+import type { AuthUser } from '../auth/auth-user.js';
 import type { Executor } from '../config/db.js';
-import type { AuditQuery } from '../dto/user.dto.js';
 import { toPage } from '../dto/common.dto.js';
+import type { AuditQuery } from '../dto/user.dto.js';
 import type { AuditEntry, AuditRepository } from '../repository/audit.repository.js';
-import type { AuthUser } from '../auth/auth-user.js'
 import { assertRole } from './policy.js';
 
 export class AuditService {
