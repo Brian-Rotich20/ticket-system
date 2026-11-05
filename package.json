@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p .",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "seed:admin": "tsx --env-file=.env scripts/seed-admin.ts"
+    "seed:demo": "tsx --env-file=.env scripts/seed-demo.ts"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.14",
     "@types/node": "^26.6.6",
+    "dotenv": "^18.0.9",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
