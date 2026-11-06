@@ -24,6 +24,9 @@ import { createStorage } from './service/storage.factory.js';
 import type { StorageService } from './service/storage.service.js';
 import { TicketService } from './service/ticket.service.js';
 import { UserService } from './service/user.service.js';
+import { publicController } from './controller/public.controller.js';
+import { TenantRepository } from './repository/tenant.repository.js';
+import { TenantService } from './service/tenant.service.js';
 
 export interface AppDeps {
   env: Env;
@@ -53,6 +56,7 @@ export async function buildApp(deps: AppDeps) {
   const notifier = new NotificationService(userRepo, deps.emailSender ?? new LogEmailSender(app.log), app.log);
   const storage = deps.storage ?? createStorage(env);
 
+  const tenantService = new TenantService(new TenantRepository(db))
   const userService = new UserService(db, userRepo, audit, auth);
   const ticketService = new TicketService(db, ticketRepo, userRepo, audit, notifier);
   const commentService = new CommentService(db, commentRepo, ticketRepo, audit, notifier);
@@ -102,6 +106,7 @@ export async function buildApp(deps: AppDeps) {
       userController(api, userService, audit);
       ticketController(api, ticketService, commentService);
       attachmentController(api, attachmentService);
+      publicController(api, tenantService);
     },
     { prefix: API_PREFIX },
   );
