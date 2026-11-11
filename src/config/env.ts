@@ -35,3 +35,7 @@ export type Env = z.infer<typeof envSchema>;
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return envSchema.parse(source);
 }
+
+// Parse a comma-separated string of origins into an array of strings
+export const parseOrigins = (csv: string): string[] =>
+  csv.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean);

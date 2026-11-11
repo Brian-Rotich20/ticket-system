@@ -27,6 +27,8 @@ import { UserService } from './service/user.service.js';
 import { publicController } from './controller/public.controller.js';
 import { TenantRepository } from './repository/tenant.repository.js';
 import { TenantService } from './service/tenant.service.js';
+import cors from '@fastify/cors';
+import { parseOrigins } from './config/env.js';
 
 export interface AppDeps {
   env: Env;
@@ -42,7 +44,7 @@ export interface AppDeps {
 export async function buildApp(deps: AppDeps) {
   const { env, db } = deps;
   const app = Fastify({ logger: deps.logger ?? env.NODE_ENV !== 'test', bodyLimit: 1024 * 1024 });
-
+  const allowedOrigins = new Set(parseOrigins(env.TRUSTED_ORIGINS)); //CORS
   // --- composition root: repositories -> services -> controllers ---
   const auth = deps.auth ?? createAuth(db, env);
 
@@ -66,6 +68,14 @@ export async function buildApp(deps: AppDeps) {
     scan: deps.scanner,
   });
 
+  await app.register(cors, {
+  // no Origin header = curl / server-to-server; browsers must be on the allowlist
+    origin: (origin, cb) => cb(null, !origin || allowedOrigins.has(origin)),
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['set-auth-token'], // the browser can only read this header if it is exposed
+    maxAge: 86400,
+  });
   // Better Auth at /api/auth/* + requireAuth / verifyRole hooks (registered on the root instance)
   await registerAuth(app, auth, env.BETTER_AUTH_URL);
   await app.register(multipart, { limits: { fileSize: env.MAX_UPLOAD_BYTES, files: 1, fields: 5 } });

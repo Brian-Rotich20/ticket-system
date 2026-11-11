@@ -5,6 +5,7 @@ import { APIError } from 'better-auth/api';
 import { bearer } from 'better-auth/plugins';
 import type { Database } from '../config/db.js';
 import type { Env } from '../config/env.js';
+import { parseOrigins } from '../config/env.js';
 import { accounts, sessions, tenants, users, verifications } from '../model/schema.js'; // adjust the path to your schema file
 
 export type AuthEnv = Pick<Env, 'BETTER_AUTH_SECRET' | 'BETTER_AUTH_URL' | 'TRUSTED_ORIGINS'>;
@@ -14,7 +15,7 @@ export function createAuth(db: Database, env: AuthEnv) {
     appName: 'Support Tickets',
     baseURL: env.BETTER_AUTH_URL,
     secret: env.BETTER_AUTH_SECRET,
-    trustedOrigins: env.TRUSTED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
+    trustedOrigins: parseOrigins(env.TRUSTED_ORIGINS),
 
     // keys must be Better Auth's model names; your table names (users, sessions, ...) can differ
     database: drizzleAdapter(db, {
