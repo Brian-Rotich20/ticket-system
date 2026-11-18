@@ -4,7 +4,7 @@ import type { CreateCommentInput } from '../dto/comment.dto.js';
 import { toPage, type PaginationQuery } from '../dto/common.dto.js';
 import { ForbiddenError, NotFoundError, TicketClosedError } from '../exception/errors.js';
 import type { Comment } from '../model/schema.js';
-import type { CommentRepository } from '../repository/comment.repository.js';
+import type { CommentRepository, CommentView  } from '../repository/comment.repository.js';
 import type { TicketRepository } from '../repository/ticket.repository.js';
 import type { AuditService } from './audit.service.js';
 import type { NotificationService } from './notification.service.js';
@@ -19,13 +19,17 @@ export class CommentService {
     private readonly notifier: NotificationService,
   ) {}
 
-  async addComment(actor: AuthUser, ticketId: number, input: CreateCommentInput): Promise<Comment> {
+  async addComment(actor: AuthUser, ticketId: number, input: CreateCommentInput): Promise<CommentView> {
     const { comment, ticket } = await this.db.transaction(async (tx) => {
       const ticket = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx); // nothing lands on a ticket that is being closed
       if (!ticket) throw new NotFoundError('Ticket', ticketId);
       assertCanView(actor, ticket);
       if (ticket.status === 'CLOSED') throw new TicketClosedError(ticketId);
-      const comment = await this.comments.insert({ ticketId, authorId: actor.id, text: input.text }, tx);
+
+      const row = await this.comments.insert({ ticketId, authorId: actor.id, text: input.text }, tx);
+      const comment = await this.comments.findViewById(row.commentId, tx);
+      if (!comment) throw new NotFoundError('Comment', row.commentId);
+
       await this.audit.record(
         {
           tenantId: actor.tenantId,
