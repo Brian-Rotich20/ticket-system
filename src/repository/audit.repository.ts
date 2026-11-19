@@ -1,6 +1,7 @@
-import { and, count, desc, eq } from 'drizzle-orm';
-import type { Database, Executor } from '../config/db.js';
-import { auditLogs, type AuditLog } from '../model/schema.js';
+import { and, count, desc, eq, getTableColumns } from "drizzle-orm";
+import type { Database, Executor } from "../config/db.js";
+import type { UserRole } from "../model/enums.js";
+import { auditLogs, users, type AuditLog } from "../model/schema.js";
 
 export interface AuditEntry {
   tenantId: string;
@@ -10,6 +11,9 @@ export interface AuditEntry {
   entityId: string | number;
   metadata?: Record<string, unknown>;
 }
+
+/** An audit row plus who did it, so the admin screen can show names. */
+export type AuditView = AuditLog & { actorName: string | null; actorRole: UserRole | null };
 
 export class AuditRepository {
   constructor(private readonly db: Database) {}
@@ -23,13 +27,20 @@ export class AuditRepository {
     filter: { entityType?: string; entityId?: string },
     opts: { limit: number; offset: number },
     ex: Executor = this.db,
-  ): Promise<{ items: AuditLog[]; total: number }> {
+  ): Promise<{ items: AuditView[]; total: number }> {
     const where = and(
       eq(auditLogs.tenantId, tenantId),
       filter.entityType ? eq(auditLogs.entityType, filter.entityType) : undefined,
       filter.entityId ? eq(auditLogs.entityId, filter.entityId) : undefined,
     );
-    const items = await ex.select().from(auditLogs).where(where).orderBy(desc(auditLogs.auditId)).limit(opts.limit).offset(opts.offset);
+    const items: AuditView[] = await ex
+      .select({ ...getTableColumns(auditLogs), actorName: users.name, actorRole: users.role })
+      .from(auditLogs)
+      .leftJoin(users, eq(users.id, auditLogs.actorId))
+      .where(where)
+      .orderBy(desc(auditLogs.auditId))
+      .limit(opts.limit)
+      .offset(opts.offset);
     const [{ total } = { total: 0 }] = await ex.select({ total: count() }).from(auditLogs).where(where);
     return { items, total };
   }

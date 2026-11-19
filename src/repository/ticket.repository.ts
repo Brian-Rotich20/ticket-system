@@ -46,6 +46,18 @@ export class TicketRepository {
     return row ?? null;
   }
 
+    /** Ticket plus requester/assignee names, for detail screens. */
+  async findViewById(tenantId: string, id: number, ex: Executor = this.db): Promise<TicketView | null> {
+    const [row] = await ex
+      .select(viewColumns)
+      .from(tickets)
+      .innerJoin(requester, eq(requester.id, tickets.requesterId))
+      .leftJoin(assignee, eq(assignee.id, tickets.assigneeId))
+      .where(inTenant(tenantId, id))
+      .limit(1);
+    return row ?? null;
+  }
+
   /** SELECT ... FOR UPDATE: serialises concurrent updates on the same ticket. Use inside a transaction. */
   async findByIdForUpdate(tenantId: string, id: number, ex: Executor): Promise<Ticket | null> {
     const [row] = await ex.select().from(tickets).where(inTenant(tenantId, id)).limit(1).for('update');

@@ -11,7 +11,7 @@ import {
 } from '../exception/errors.js';
 import { canTransition, type TicketStatus } from '../model/enums.js';
 import type { Ticket, User } from '../model/schema.js';
-import type { TicketChanges, TicketFilter, TicketRepository } from '../repository/ticket.repository.js';
+import type { TicketChanges, TicketFilter, TicketRepository, TicketView  } from '../repository/ticket.repository.js';
 import type { UserRepository } from '../repository/user.repository.js';
 import type { AuditService } from './audit.service.js';
 import type { NotificationService } from './notification.service.js';
@@ -60,8 +60,8 @@ export class TicketService {
     return ticket;
   }
 
-  async getTicketById(actor: AuthUser, ticketId: number): Promise<Ticket> {
-    const ticket = await this.tickets.findById(actor.tenantId, ticketId);
+   async getTicketById(actor: AuthUser, ticketId: number): Promise<TicketView> {
+    const ticket = await this.tickets.findViewById(actor.tenantId, ticketId);
     if (!ticket) throw new NotFoundError('Ticket', ticketId);
     assertCanView(actor, ticket);
     return ticket;
@@ -116,8 +116,8 @@ export class TicketService {
     return toPage(items, total, q);
   }
 
-  private async mutate(actor: AuthUser, ticketId: number, patch: UpdateTicketInput): Promise<Ticket> {
-    const { ticket, events } = await this.db.transaction(async (tx) => {
+  private async mutate(actor: AuthUser, ticketId: number, patch: UpdateTicketInput): Promise<TicketView> {
+    const { events } = await this.db.transaction(async (tx) => { 
       const current = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx); // serialises concurrent updates
       if (!current) throw new NotFoundError('Ticket', ticketId);
       assertCanView(actor, current);
@@ -206,6 +206,9 @@ export class TicketService {
       if (e.type === 'assigned') this.notifier.notifyOnAssignment(e.ticket, e.assignee, e.previousAssigneeId);
       else this.notifier.notifyOnStatusChange(e.ticket, e.oldStatus, e.newStatus);
     }
-    return ticket;
+        const view = await this.tickets.findViewById(actor.tenantId, ticketId);
+    if (!view) throw new NotFoundError('Ticket', ticketId);
+    return view; // PATCH now returns the ticket with names
+
   }
 }
