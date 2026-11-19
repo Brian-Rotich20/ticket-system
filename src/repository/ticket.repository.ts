@@ -1,23 +1,33 @@
-import { and, asc, count, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { Database, Executor } from '../config/db.js';
 import type { Priority, TicketStatus, TicketType } from '../model/enums.js';
-import { tickets, type NewTicket, type Ticket } from '../model/schema.js';
+import { tickets, users, type NewTicket, type Ticket } from '../model/schema.js';
 
 export interface TicketFilter {
   status?: TicketStatus;
   priority?: Priority;
   type?: TicketType;
   assigneeId?: string;
+  /** Only tickets nobody has picked up. Takes precedence over assigneeId. */
+  unassigned?: boolean;
   requesterId?: string;
   q?: string;
 }
 export interface TicketListOptions {
   limit: number;
   offset: number;
-  sortBy: 'createdAt' | 'updatedAt';
+  sortBy: 'createdAt' | 'updatedAt' | 'priority';
   order: 'asc' | 'desc';
 }
 export type TicketChanges = Partial<Pick<Ticket, 'status' | 'priority' | 'type' | 'assigneeId'>>;
+
+/** A ticket plus the names a list screen needs (users can't be looked up one by one from the browser). */
+export type TicketView = Ticket & { requesterName: string; assigneeName: string | null };
+
+const requester = alias(users, 'requester');
+const assignee = alias(users, 'assignee');
+const viewColumns = { ...getTableColumns(tickets), requesterName: requester.name, assigneeName: assignee.name };
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, '\\$&');
 const inTenant = (tenantId: string, id: number) => and(eq(tickets.tenantId, tenantId), eq(tickets.ticketId, id));
@@ -58,23 +68,28 @@ export class TicketRepository {
       filter.status && eq(tickets.status, filter.status),
       filter.priority && eq(tickets.priority, filter.priority),
       filter.type && eq(tickets.type, filter.type),
-      filter.assigneeId ? eq(tickets.assigneeId, filter.assigneeId) : undefined,
+      filter.unassigned ? isNull(tickets.assigneeId) : filter.assigneeId ? eq(tickets.assigneeId, filter.assigneeId) : undefined,
       filter.requesterId ? eq(tickets.requesterId, filter.requesterId) : undefined,
       filter.q
         ? or(ilike(tickets.title, `%${escapeLike(filter.q)}%`), ilike(tickets.description, `%${escapeLike(filter.q)}%`))
         : undefined,
     ];
     const where = and(...conds);
-    const sortCol = opts.sortBy === 'updatedAt' ? tickets.updatedAt : tickets.createdAt;
+
+    // priority is a Postgres enum declared LOW < MEDIUM < HIGH < URGENT, so DESC puts urgent first
+    const sortCol = opts.sortBy === 'priority' ? tickets.priority : opts.sortBy === 'updatedAt' ? tickets.updatedAt : tickets.createdAt;
     const dir = opts.order === 'asc' ? asc : desc;
 
-    const items = await ex
-      .select()
+    const items: TicketView[] = await ex
+      .select(viewColumns)
       .from(tickets)
+      .innerJoin(requester, eq(requester.id, tickets.requesterId))
+      .leftJoin(assignee, eq(assignee.id, tickets.assigneeId))
       .where(where)
       .orderBy(dir(sortCol), dir(tickets.ticketId))
       .limit(opts.limit)
       .offset(opts.offset);
+
     const [{ total } = { total: 0 }] = await ex.select({ total: count() }).from(tickets).where(where);
     return { items, total };
   }

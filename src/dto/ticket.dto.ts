@@ -31,7 +31,8 @@ export const ticketFilterQuery = paginationQuery.extend({
   type: z.enum(TICKET_TYPES).optional(),
   assigneeId: z.string().min(1).max(64).optional(),
   requesterId: z.string().min(1).max(64).optional(),
-  sortBy: z.enum(['createdAt', 'updatedAt']).default('createdAt'),
+  sortBy: z.enum(['createdAt', 'updatedAt', 'priority']).default('createdAt'),
+  unassigned: z.enum(['true']).optional(),  
   order: z.enum(['asc', 'desc']).default('desc'),
 });
 export type TicketFilterQuery = z.infer<typeof ticketFilterQuery>;

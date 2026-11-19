@@ -81,19 +81,22 @@ export class TicketService {
   }
 
   /** Customers are always scoped to their own tickets; staff see the whole tenant. */
-  getTickets(actor: AuthUser, q: TicketFilterQuery) {
-    return this.page(actor, { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, requesterId: q.requesterId }, q);
-  }
-
-  /** GET /tickets/search?q= */
-  searchTickets(actor: AuthUser, q: TicketSearchQuery) {
+   getTickets(actor: AuthUser, q: TicketFilterQuery) {
     return this.page(
       actor,
-      { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, requesterId: q.requesterId, q: q.q },
+      { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, unassigned: q.unassigned === 'true', requesterId: q.requesterId },
       q,
     );
   }
 
+  /** GET /tickets/search?q= */
+  searchTickets(actor: AuthUser, q: TicketSearchQuery) {
+      return this.page(
+        actor,
+        { status: q.status, priority: q.priority, type: q.type, assigneeId: q.assigneeId, unassigned: q.unassigned === 'true', requesterId: q.requesterId, q: q.q },
+        q,
+      );
+    }
   /** GET /tickets/my: tickets assigned to me (staff) / tickets I raised (customer). */
   getMyTickets(actor: AuthUser, q: TicketFilterQuery) {
     const filter: TicketFilter = { status: q.status, priority: q.priority, type: q.type };
