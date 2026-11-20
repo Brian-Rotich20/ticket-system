@@ -69,25 +69,21 @@ export async function buildApp(deps: AppDeps) {
   });
 
 
-  await app.register(cors, {
-    origin: (origin, cb) => {
-      // Allow server-to-server requests without an Origin header.
-      if (!origin) {
-        return cb(null, true);
-      }
-      // Allow only explicitly trusted frontend origins.
-      if (allowedOrigins.has(origin)) {
-        return cb(null, true);
-      }
+    await app.register(cors, {
+      origin: (origin, cb) => {
+        if (!origin || allowedOrigins.has(origin)) {
+          return cb(null, true);
+        }
 
-      return cb(new Error('Origin not allowed'), false);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['set-auth-token'],
-    maxAge: 86400,
-  });
+        return cb(new Error('Origin not allowed'), false);
+      },
+
+      credentials: true,
+      methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      exposedHeaders: ['set-auth-token'],
+      maxAge: 86400,
+    });
 
   // Better Auth at /api/auth/* + requireAuth / verifyRole hooks (registered on the root instance)
   await registerAuth(app, auth, env.BETTER_AUTH_URL);
