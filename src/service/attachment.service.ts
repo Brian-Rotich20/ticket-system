@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AuthUser } from '../auth/auth-user.js';
 import { API_PREFIX } from '../config/constants.js';
-import type { Database } from '../config/db.js';
+import type { Database, Executor } from '../config/db.js';
 import {
   ConflictError,
   ForbiddenError,
@@ -12,8 +12,10 @@ import {
   UnsupportedFileTypeError,
   ValidationError,
 } from '../exception/errors.js';
-import type { Attachment } from '../model/schema.js';
+import type { CommentVisibility } from '../model/enums.js';
+import type { Attachment, Ticket } from '../model/schema.js';
 import type { AttachmentRepository } from '../repository/attachment.repository.js';
+import type { CommentRepository } from '../repository/comment.repository.js';
 import type { TicketRepository } from '../repository/ticket.repository.js';
 import type { AuditService } from './audit.service.js';
 import { assertCanView, isAdmin } from './policy.js';
@@ -43,8 +45,15 @@ export interface UploadedFile {
   mimetype: string;
   data: Buffer;
 }
-/** What clients see: metadata plus an API download URL, never the storage key/URL. */
+/** Upload options: INTERNAL unless stated; an attachment linked to a comment takes the comment's visibility. */
+export interface UploadOptions {
+  visibility?: CommentVisibility;
+  commentId?: number;
+}
+/** What staff see: metadata plus an API download URL, never the storage key/URL. */
 export type AttachmentView = Omit<Attachment, 'fileUrl'> & { url: string };
+/** What the tracking page sees: no uploader, no storage key. */
+export type PublicAttachmentView = Pick<Attachment, 'attachmentId' | 'fileName' | 'fileType' | 'createdAt'>;
 
 /** Hook for antivirus scanning (ClamAV etc.). Throw to reject a file. */
 export type FileScanner = (file: UploadedFile) => Promise<void>;
@@ -54,13 +63,16 @@ export class AttachmentService {
     private readonly db: Database,
     private readonly attachments: AttachmentRepository,
     private readonly tickets: TicketRepository,
+    private readonly comments: CommentRepository,
     private readonly storage: StorageService,
     private readonly audit: AuditService,
     private readonly opts: { maxBytes: number; maxPerTicket: number; scan?: FileScanner },
   ) {}
 
-  async uploadFile(actor: AuthUser, ticketId: number, file: UploadedFile): Promise<AttachmentView> {
+  async uploadFile(actor: AuthUser, ticketId: number, file: UploadedFile, options: UploadOptions = {}): Promise<AttachmentView> {
     const fileName = this.validate(file);
+    // access, state and limits are checked before anything is written to storage...
+    const visibility = await this.check(actor, ticketId, options, await this.tickets.findById(actor.tenantId, ticketId));
     await this.opts.scan?.(file);
     // tenant prefix keeps tenants apart in storage (Cloudinary folder / local dir) too
     const key = `${actor.tenantId}/tickets/${ticketId}/${randomUUID()}${path.extname(fileName).toLowerCase()}`;
@@ -68,15 +80,11 @@ export class AttachmentService {
     await this.storage.save(key, file.data, file.mimetype);
     try {
       const saved = await this.db.transaction(async (tx) => {
+        // ...and again under the ticket lock, so the count limit and the closed check can't be raced
         const ticket = await this.tickets.findByIdForUpdate(actor.tenantId, ticketId, tx);
-        if (!ticket) throw new NotFoundError('Ticket', ticketId);
-        assertCanView(actor, ticket);
-        if (ticket.status === 'CLOSED') throw new TicketClosedError(ticketId);
-        if ((await this.attachments.countByTicket(ticketId, tx)) >= this.opts.maxPerTicket) {
-          throw new ConflictError(`A ticket can have at most ${this.opts.maxPerTicket} attachments`, 'TOO_MANY_ATTACHMENTS');
-        }
+        await this.check(actor, ticketId, options, ticket, tx);
         const row = await this.attachments.insert(
-          { ticketId, fileUrl: key, fileName, fileType: file.mimetype, uploadedBy: actor.id },
+          { ticketId, fileUrl: key, fileName, fileType: file.mimetype, uploadedBy: actor.id, visibility, commentId: options.commentId ?? null },
           tx,
         );
         await this.audit.record(
@@ -86,7 +94,7 @@ export class AttachmentService {
             action: 'ATTACHMENT_ADDED',
             entityType: 'TICKET',
             entityId: ticketId,
-            metadata: { attachmentId: row.attachmentId, fileName },
+            metadata: { attachmentId: row.attachmentId, fileName, visibility },
           },
           tx,
         );
@@ -116,6 +124,23 @@ export class AttachmentService {
     return { attachment, data: await this.storage.read(attachment.fileUrl) };
   }
 
+  /** PUBLIC attachments of a ticket, for the tracking page (the caller has validated the tracking token). */
+  async listPublic(ticketId: number): Promise<PublicAttachmentView[]> {
+    return (await this.attachments.listByTicket(ticketId, undefined, 'PUBLIC')).map((a) => ({
+      attachmentId: a.attachmentId,
+      fileName: a.fileName,
+      fileType: a.fileType,
+      createdAt: a.createdAt,
+    }));
+  }
+
+  /** Download through the tracking link: only a PUBLIC attachment of that exact ticket. Anything else is 404. */
+  async readPublicFile(ticketId: number, attachmentId: number): Promise<{ attachment: Attachment; data: Buffer }> {
+    const attachment = await this.attachments.findById(attachmentId);
+    if (!attachment || attachment.ticketId !== ticketId || attachment.visibility !== 'PUBLIC') throw new NotFoundError('Attachment', attachmentId);
+    return { attachment, data: await this.storage.read(attachment.fileUrl) };
+  }
+
   /** Uploader or admin only. */
   async deleteAttachment(actor: AuthUser, attachmentId: number): Promise<void> {
     const attachment = await this.loadAuthorized(actor, attachmentId);
@@ -137,6 +162,26 @@ export class AttachmentService {
       );
     });
     await this.storage.delete(attachment.fileUrl).catch(() => undefined);
+  }
+
+  /** Ticket access, state, count limit and comment link. Returns the effective visibility. */
+  private async check(
+    actor: AuthUser,
+    ticketId: number,
+    options: UploadOptions,
+    ticket: Ticket | null,
+    tx?: Executor,
+  ): Promise<CommentVisibility> {
+    if (!ticket) throw new NotFoundError('Ticket', ticketId);
+    assertCanView(actor, ticket);
+    if (ticket.status === 'CLOSED') throw new TicketClosedError(ticketId);
+    if ((await this.attachments.countByTicket(ticketId, tx)) >= this.opts.maxPerTicket) {
+      throw new ConflictError(`A ticket can have at most ${this.opts.maxPerTicket} attachments`, 'TOO_MANY_ATTACHMENTS');
+    }
+    if (options.commentId === undefined) return options.visibility ?? 'INTERNAL';
+    const comment = await this.comments.findById(options.commentId, tx);
+    if (!comment || comment.ticketId !== ticketId) throw new ValidationError('commentId must be a comment of this ticket');
+    return comment.visibility;
   }
 
   private async loadAuthorized(actor: AuthUser, attachmentId: number): Promise<Attachment> {

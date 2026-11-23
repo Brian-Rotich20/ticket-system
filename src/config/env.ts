@@ -12,6 +12,14 @@ const envSchema = z
     BETTER_AUTH_URL: z.string().url().default('http://localhost:3000'),
     
     TRUSTED_ORIGINS: z.string().default(''),
+    /** Public URL of the web app, used to build tracking and invitation links. Optional: links are always returned as paths too. */
+    APP_URL: z.string().url().optional(),
+    /** Number of reverse proxies in front of the API (Render: 1). Needed for per-client rate limiting. 0 = trust none. */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
+
+    // Customer tracking links and staff invitations
+    TRACKING_TOKEN_TTL_DAYS: z.coerce.number().int().positive().max(365).default(30),
+    INVITATION_TTL_DAYS: z.coerce.number().int().positive().max(30).default(7),
 
     // File storage
     STORAGE_DRIVER: z.enum(['local', 'cloudinary']).default('local'),

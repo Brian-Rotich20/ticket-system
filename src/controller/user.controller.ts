@@ -1,20 +1,27 @@
 import type { FastifyInstance } from 'fastify';
-import type { AuthUser } from '../auth/auth-user.js'
-import { idParam, userIdParam } from '../dto/common.dto.js';
-import { auditQuery, createUserDto, listUsersQuery } from '../dto/user.dto.js';
+import { currentUser } from '../auth/plugin.js';
+import { userIdParam } from '../dto/common.dto.js';
+import { auditQuery, createUserDto, listUsersQuery, updateMemberDto } from '../dto/user.dto.js';
 import type { AuditService } from '../service/audit.service.js';
 import type { UserService } from '../service/user.service.js';
-import { currentUser } from '../auth/plugin.js';
 
+/** /users is the organization's team: its members, with their role and status in this organization. */
 export function userController(app: FastifyInstance, users: UserService, audit: AuditService) {
   const { requireAuth, verifyRole } = app;
-  app.get('/users',     { preHandler: [requireAuth, verifyRole(['AGENT', 'ADMIN'])] }, (req) => users.listUsers(currentUser(req), listUsersQuery.parse(req.query)));
-  app.get('/users/:id', { preHandler: [requireAuth, verifyRole(['CUSTOMER', 'AGENT', 'ADMIN'])] }, (req) => users.getUserById(currentUser(req), userIdParam.parse(req.params).id));
-  app.post('/users',    { preHandler: [requireAuth, verifyRole(['ADMIN'])] }, async (req, reply) => {
-  const user = await users.createUser(currentUser(req), createUserDto.parse(req.body));
-  return reply.code(201).send(user);
-});
+  const staff = { preHandler: [requireAuth, verifyRole(['AGENT', 'ADMIN'])] };
+  const admin = { preHandler: [requireAuth, verifyRole(['ADMIN'])] };
+
+  app.get('/users', staff, (req) => users.listUsers(currentUser(req), listUsersQuery.parse(req.query)));
+  app.get('/users/:id', staff, (req) => users.getUserById(currentUser(req), userIdParam.parse(req.params).id));
+  app.post('/users', admin, async (req, reply) => {
+    const user = await users.createUser(currentUser(req), createUserDto.parse(req.body));
+    return reply.code(201).send(user);
+  });
+  // change role, deactivate / re-activate
+  app.patch('/users/:id', admin, (req) =>
+    users.updateMember(currentUser(req), userIdParam.parse(req.params).id, updateMemberDto.parse(req.body)),
+  );
 
   // Audit logs (who did what and when): admin only
-  app.get('/audit-logs', { preHandler: [requireAuth, verifyRole(['ADMIN'])] }, (req) => audit.list(currentUser(req), auditQuery.parse(req.query)));
+  app.get('/audit-logs', admin, (req) => audit.list(currentUser(req), auditQuery.parse(req.query)));
 }

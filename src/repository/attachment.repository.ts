@@ -1,9 +1,11 @@
-import { asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq } from 'drizzle-orm';
 import type { Database, Executor } from '../config/db.js';
+import type { CommentVisibility } from '../model/enums.js';
 import { attachments, type Attachment } from '../model/schema.js';
 
-export type NewAttachment = Pick<Attachment, 'ticketId' | 'fileUrl' | 'fileName' | 'fileType' | 'uploadedBy'>;
+export type NewAttachment = Pick<Attachment, 'ticketId' | 'fileUrl' | 'fileName' | 'fileType' | 'uploadedBy' | 'visibility' | 'commentId'>;
 
+/** Tenant isolation is enforced one level up: callers always load the (tenant-scoped) ticket first. */
 export class AttachmentRepository {
   constructor(private readonly db: Database) {}
 
@@ -17,8 +19,13 @@ export class AttachmentRepository {
     return row ?? null;
   }
 
-  async listByTicket(ticketId: number, ex: Executor = this.db): Promise<Attachment[]> {
-    return ex.select().from(attachments).where(eq(attachments.ticketId, ticketId)).orderBy(asc(attachments.attachmentId));
+  /** `visibility` limits the result (the public tracking page passes PUBLIC). */
+  async listByTicket(ticketId: number, ex: Executor = this.db, visibility?: CommentVisibility): Promise<Attachment[]> {
+    return ex
+      .select()
+      .from(attachments)
+      .where(and(eq(attachments.ticketId, ticketId), visibility ? eq(attachments.visibility, visibility) : undefined))
+      .orderBy(asc(attachments.attachmentId));
   }
 
   async countByTicket(ticketId: number, ex: Executor = this.db): Promise<number> {

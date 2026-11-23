@@ -6,7 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "dev": "tsx watch --env-file=.env src/server.ts",
-     "start": "node dist/src/server.js",
+    "start": "node dist/src/server.js",
     "build": "tsc -p .",
     "typecheck": "tsc --noEmit -p .",
     "db:generate": "drizzle-kit generate",
@@ -20,6 +20,7 @@
   "dependencies": {
     "@fastify/cors": "^11.4.1",
     "@fastify/multipart": "^10.1.7",
+    "@fastify/rate-limit": "^11.3.0",
     "better-auth": "^1.7.15",
     "cloudinary": "^2.11.0",
     "drizzle-orm": "^0.45.4",
